@@ -42,7 +42,7 @@
 
 #define SHELL_PROMPT "msh> "
 
-/* ====== Parámetros de limites razonables ====== */
+/* ====== Parámetros de límites razonables ====== */
 #define MAX_JOBS        128
 #define MAX_CMDS_INJOB  32   /* nº máx. de procesos por pipeline que guardaremos */
 #define CMDSTR_LEN      512  /* longitud para guardar la línea resumida del job */
@@ -51,11 +51,11 @@
 typedef enum { JOB_RUNNING = 0, JOB_DONE = 1 } job_state_t;
 
 typedef struct {
-    pid_t   pids[MAX_CMDS_INJOB];   /* PIDs de todos los procesos de la tubería */
-    int     npids;                  /* cuántos se guardaron */
-    char    cmdline[CMDSTR_LEN];    /* texto resumen del trabajo */
-    job_state_t state;              /* RUNNING / DONE */
-    bool    used;                   /* si esta entrada está ocupada */
+    pid_t       pids[MAX_CMDS_INJOB];   /* PIDs de todos los procesos de la tubería */
+    int         npids;                  /* cuántos se guardaron */
+    char        cmdline[CMDSTR_LEN];    /* texto resumen del trabajo */
+    job_state_t state;                  /* RUNNING / DONE */
+    bool        used;                   /* si esta entrada está ocupada */
 } job_t;
 
 static job_t jobs[MAX_JOBS];
@@ -99,6 +99,11 @@ static void open_and_dup_or_exit(const char *path, int flags, mode_t mode, int t
         die_child("dup2(%s -> %d) falló: %s\n", path, target_fd, strerror(saved));
     }
     close(fd);
+}
+
+/* Imprime el error del enunciado para un comando inexistente */
+static void print_cmd_not_found(const char *cmd) {
+    fprintf(stderr, "Mandato: Error. No se encuentra el mandato %s\n", cmd);
 }
 
 /* ====== Gestión de jobs ====== */
@@ -206,7 +211,6 @@ static void builtin_fg(int idx1based) {
 }
 
 /* ====== Helpers de impresión del comando para jobs ====== */
-
 /* Construye un resumen legible de la línea para guardarlo en 'jobs' */
 static void build_cmdline_summary(const tline *line, char *dst, size_t dstlen) {
     /* Formato: cmd1 [args] | cmd2 [args] ... con redirecciones y & si procede */
@@ -244,8 +248,7 @@ static void build_cmdline_summary(const tline *line, char *dst, size_t dstlen) {
 static bool redirections_semantics_ok(const tline *line) {
     if (!line || line->ncommands <= 0) return false;
     /* El parser ya separa la semántica global. Nosotros nos aseguramos de aplicarlas SOLO
-       en el primer/último mandato. La comprobación detallada se realiza en ejecución
-       (i==0 para '<', i==n-1 para '>' y '>&'). Aquí basta con aceptar. */
+       en el primer/último mandato. La comprobación detallada se realiza en ejecución. */
     return true;
 }
 
@@ -284,7 +287,7 @@ static void execute_line(tline *line) {
         pid_t pid = fork();
         if (pid < 0) {
             perror("fork");
-            /* cerrar y abortar */
+            /* cerrar y abortar la línea (no la shell) */
             if (pipes) {
                 for (int k = 0; k < n - 1; ++k) { close(pipes[k][0]); close(pipes[k][1]); }
                 free(pipes);
@@ -331,10 +334,18 @@ static void execute_line(tline *line) {
                 }
             }
 
-            /* Ejecutar mandato */
+            /* Ejecutar mandato con manejo de "no encontrado" */
+            if (!cmd->filename || !cmd->argv || !cmd->argv[0]) {
+                const char *shown = (cmd->argv && cmd->argv[0]) ? cmd->argv[0] : "(null)";
+                print_cmd_not_found(shown);
+                _exit(127);
+            }
+
             execvp(cmd->filename, cmd->argv);
-            /* Si exec falla: */
-            die_child("mandato: No se encuentra '%s' (%s)\n", cmd->filename, strerror(errno));
+
+            /* Si execvp retorna, siempre imprimimos el formato del enunciado y salimos SOLO del hijo */
+            print_cmd_not_found(cmd->argv[0]);
+            _exit(127);
         }
 
         /* ---- Padre ---- */
@@ -373,7 +384,6 @@ static void execute_line(tline *line) {
 }
 
 /* ====== Bucle de lectura-ejecución ====== */
-
 int main(void) {
     install_shell_signal_handlers();
 
@@ -398,12 +408,16 @@ int main(void) {
 
         /* Builtins mínimos de la práctica */
         /* jobs */
-        if (line->ncommands == 1 && strcmp(line->commands[0].filename, "jobs") == 0) {
+        if (line->ncommands == 1 &&
+            line->commands[0].filename &&
+            strcmp(line->commands[0].filename, "jobs") == 0) {
             builtin_jobs();
             continue;
         }
         /* fg <n> */
-        if (line->ncommands == 1 && strcmp(line->commands[0].filename, "fg") == 0) {
+        if (line->ncommands == 1 &&
+            line->commands[0].filename &&
+            strcmp(line->commands[0].filename, "fg") == 0) {
             if (line->commands[0].argc < 2) {
                 fprintf(stderr, "Uso: fg <n>\n");
             } else {
@@ -413,7 +427,9 @@ int main(void) {
             continue;
         }
         /* exit (opcional y habitual) */
-        if (line->ncommands == 1 && strcmp(line->commands[0].filename, "exit") == 0) {
+        if (line->ncommands == 1 &&
+            line->commands[0].filename &&
+            strcmp(line->commands[0].filename, "exit") == 0) {
             break;
         }
 
