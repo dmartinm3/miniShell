@@ -1,0 +1,104 @@
+MiniShell - Estado a 2025-11-12
+===============================
+
+HECHO / FUNCIONA
+----------------
+
+[OK] Línea vacía → solo repite prompt (sin ejecutar nada)
+
+[OK] Comandos simples:
+     - echo hola               => "hola"
+     - echo hola mundo         => "hola mundo"
+
+[OK] Redirecciones básicas:
+     - echo salida_ok > out.txt
+     - cat < out.txt           => "salida_ok"
+
+[OK] Redirección de stderr:
+     - ls /noexiste >& err.txt
+     - cat < err.txt           => "ls: cannot access '/noexiste': No such file or directory"
+
+[OK] Pipes sencillos:
+     - echo -e "hola\nadios\nhola" | grep adios   => "adios"
+     - printf "a\nb\nc\n" | wc -l                 => "3"
+
+[OK] Background (&):
+     - sleep 2 & / sleep 1 &   => devuelve prompt de inmediato y muestra índice/PID
+     - sleep 10  (Ctrl-C)      => mata al proceso fg, minishell sigue
+     - sleep 10 & (Ctrl-C)     => minishell sigue, el job en bg no cae
+
+[OK] Validación de colocación de redirecciones (detecta y aborta):
+     - cat < in.txt | sort < otro.txt
+     - echo x > a.txt | wc
+     - echo x | wc >& err.txt | cat
+     - < in.txt cat
+     => "Syntax error checking."
+
+PENDIENTE / ARREGLAR (BLOQUEANTE)
+----------------------------------
+[ ] Mandato inexistente provoca segfault:
+     - comando_que_no_existe_123
+     Esperado: "<cmd>: No se encuentra el mandato" (stderr) y NO segfault.
+
+[ ] Builtin `cd` provoca segfault:
+     - cd /, cd .., cd, cd /tmp, cd /noexiste
+     Esperado: cambiar de directorio (o error legible) e imprimir ruta absoluta tras el cambio.
+
+[ ] `jobs` provoca segfault tras lanzar un bg:
+     - sleep 5 & ; jobs
+     Esperado: listar trabajos (Running/Done) con identificador.
+
+[ ] `fg` provoca segfault:
+     - sleep 5 & ; fg
+     Esperado: traer job a foreground y esperar (sin tumbar minishell).
+
+[ ] Quoting de argumentos (comillas se mantienen literales):
+     - cat < in.txt                     => imprime con comillas: "hola mundo"
+     - echo "con espacios y comillas"   => imprime con comillas
+     - echo 'texto con comillas simples'=> imprime con comillas
+     - printf "uno dos tres" | tr ' ' '\n' | sort | uniq -c
+       => warnings de printf y error de tr por comillas literales
+     - printf "c b a\n" | sort | uniq | tr a-z A-Z
+       => warning y salida parcial con comillas
+     Esperado: eliminar comillas de argv y nombres de fichero, manteniendo espacios internos.
+
+[ ] Pipeline con redirección de salida conserva comillas en el fichero:
+     - cat < in.txt | tr a-z A-Z > upper.txt
+     - cat upper.txt                   => "HOLA MUNDO"
+     Esperado: HOLA MUNDO (sin comillas).
+
+[ ] `:` como mandato provoca segfault:
+     - : > vacio.txt
+     Esperado: o bien builtin `:` (no-op) o error de mandato (pero sin segfault).
+
+PENDIENTE / AJUSTES DE ESPECIFICACIÓN
+-------------------------------------
+[ ] Mensajes de error de redirecciones (formato exacto del enunciado):
+     - cat < nohay.txt
+     - echo x > /ruta/que/no/existe/out.txt
+     - ls >& /ruta/que/no/existe/err.txt
+     Actual: "No se pudo abrir archivo ..."
+     Esperado: "<fichero>: Error. <descripción>"
+
+[ ] Mensaje al lanzar en background:
+     Actual: "[n] PID en background"
+     Mostrar exactamente [PID] (sin texto adicional)
+
+[ ] fg sin argumento trae el último job; reorienta terminal (process group + tcsetpgrp)
+
+CRITERIOS DE ACEPTACIÓN RESUMIDOS
+---------------------------------
+- Mandato no encontrado: imprime "<cmd>: No se encuentra el mandato" (stderr) y continúa sin segfault (exit code 127 en hijo).
+- `cd` (sin pipes): cambia dir (o error) e imprime ruta absoluta con getcwd(); `cd` sin args usa $HOME.
+- `jobs` / `fg`: no crashean; `jobs` lista; `fg` trae y espera; Ctrl-C afecta al job fg, no a la shell.
+- Quoting: comillas externas se retiran en argv y en nombres de redirección; espacios internos se conservan.
+- Redirecciones: `<` solo en primer mandato; `>` y `>&` solo en último; errores con el formato exacto "fichero: Error. ...".
+- Background: prompt inmediato; salida de anuncio conforme al enunciado.
+
+PRIORIDAD SUGERIDA
+------------------
+1) Evitar segfaults: mandato inexistente, `cd`, `jobs`, `fg`, `:`.
+2) Reparar quoting (argv y redirecciones) → arregla múltiples fallos colaterales.
+3) Implementar correctamente `cd`, `jobs`, `fg` (aunque sea versión mínima sin control de terminal).
+4) Ajustar formato de mensajes (redirecciones, background).
+5) Re-verificar casos: `cat upper.txt` debe salir sin comillas; pipelines con printf/tr deben funcionar sin warnings/errores.

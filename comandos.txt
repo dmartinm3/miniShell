@@ -1,3 +1,12 @@
 make clean
-
 make
+
+./msh
+
+
+
+
+
+gcc -Wall -g test.c libparser_64.a -o test -no-pie
+
+./test
