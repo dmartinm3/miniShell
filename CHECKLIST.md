@@ -6,10 +6,10 @@ Marca cada casilla al validar la prueba y ejecuta el comando sugerido para compr
 
 ## ⚙️ **Prompt e interacción**
 
-- [ ] **Prompt exacto** `msh ` y reimpresión tras cada ejecución en foreground.  
+- [x] **Prompt exacto** `msh ` y reimpresión tras cada ejecución en foreground.  
   **Comando:** iniciar minishell y pulsar **Enter** varias veces.
 
-- [ ] **Línea vacía o solo espacios** no ejecuta nada y vuelve al prompt.  
+- [x] **Línea vacía o solo espacios** no ejecuta nada y vuelve al prompt.  
   **Comando:** introducir solo espacios y **Enter**.
 
 - [ ] **Parser** reconoce nº de comandos, argumentos, redirecciones y background.  
@@ -19,10 +19,10 @@ Marca cada casilla al validar la prueba y ejecuta el comando sugerido para compr
 
 ## 🧱 **Mandatos simples**
 
-- [ ] Ejecuta mandato con argumentos en foreground y **espera**.  
+- [x] Ejecuta mandato con argumentos en foreground y **espera**.  
   **Comando:** `/bin/echo hola mundo`
 
-- [ ] Mandato inexistente → error por **stderr**, shell sigue operativa.  
+- [x] Mandato inexistente → error por **stderr**, shell sigue operativa.  
   **Comando:** `foobarbaz`
 
 ---

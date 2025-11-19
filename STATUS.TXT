@@ -1,104 +1,214 @@
-MiniShell - Estado a 2025-11-12
-===============================
+MiniShell – Checklist final
+======================================
 
-HECHO / FUNCIONA
-----------------
+### Básico: prompt, lectura y líneas vacías
+- [OK] Prompt inicial correcto  
+  Ejemplo comando: (al arrancar minishell)  
+  Salida esperada: aparece `msh> ` y el cursor tras un espacio.[1]
 
-[OK] Línea vacía → solo repite prompt (sin ejecutar nada)
+- [OK] Línea vacía solo repite prompt  
+  Ejemplo comando: pulsar Enter sin escribir nada.  
+  Salida esperada: una nueva línea `msh> ` sin ejecutar nada.[1]
 
-[OK] Comandos simples:
-     - echo hola               => "hola"
-     - echo hola mundo         => "hola mundo"
+- [OK] Ctrl+D cierra la minishell limpiamente  
+  Ejemplo comando: en una línea nueva, pulsar Ctrl+D.  
+  Salida esperada: minishell termina y vuelve a la shell del sistema, con un salto de línea final.[1]
 
-[OK] Redirecciones básicas:
-     - echo salida_ok > out.txt
-     - cat < out.txt           => "salida_ok"
+### Mandatos simples en foreground
+- [OK] Mandato simple sin argumentos  
+  Ejemplo comando: `ls`  
+  Salida esperada: listado de ficheros del directorio actual y luego `msh> `.[1]
 
-[OK] Redirección de stderr:
-     - ls /noexiste >& err.txt
-     - cat < err.txt           => "ls: cannot access '/noexiste': No such file or directory"
+- [OK] Mandato simple con argumentos  
+  Ejemplo comando: `echo hola mundo`  
+  Salida esperada: línea `hola mundo` y luego `msh> `.[1]
 
-[OK] Pipes sencillos:
-     - echo -e "hola\nadios\nhola" | grep adios   => "adios"
-     - printf "a\nb\nc\n" | wc -l                 => "3"
+- [OK] Mandato con ruta absoluta  
+  Ejemplo comando: `/bin/echo OK`  
+  Salida esperada: `OK` y luego `msh> `.[1]
 
-[OK] Background (&):
-     - sleep 2 & / sleep 1 &   => devuelve prompt de inmediato y muestra índice/PID
-     - sleep 10  (Ctrl-C)      => mata al proceso fg, minishell sigue
-     - sleep 10 & (Ctrl-C)     => minishell sigue, el job en bg no cae
+### Redirecciones en foreground
+- [OK] Redirección de salida `>` en mandato simple  
+  Ejemplo comandos:  
+  - `echo hola > out.txt`  
+  - `cat < out.txt`  
+  Salida esperada: `cat` muestra `hola` exactamente.[1]
 
-[OK] Validación de colocación de redirecciones (detecta y aborta):
-     - cat < in.txt | sort < otro.txt
-     - echo x > a.txt | wc
-     - echo x | wc >& err.txt | cat
-     - < in.txt cat
-     => "Syntax error checking."
+- [OK] Redirección de entrada `<` solo en primer mandato  
+  Ejemplo comandos:  
+  - `/usr/bin/printf "a\nb\n" > in.txt`  
+  - `wc -l < in.txt`  
+  Salida esperada: `2`.[1]
 
-PENDIENTE / ARREGLAR (BLOQUEANTE)
-----------------------------------
-[ ] Mandato inexistente provoca segfault:
-     - comando_que_no_existe_123
-     Esperado: "<cmd>: No se encuentra el mandato" (stderr) y NO segfault.
+- [APARECEN COMILLAS] Redirección de salida `>` solo en último mandato  
+  Ejemplo comandos:  
+  - `/usr/bin/printf "hola\n" | tr a-z A-Z > upper.txt`  
+  - `cat < upper.txt`  
+  Salida esperada: `HOLA` (sin comillas adicionales).[1]
 
-[ ] Builtin `cd` provoca segfault:
-     - cd /, cd .., cd, cd /tmp, cd /noexiste
-     Esperado: cambiar de directorio (o error legible) e imprimir ruta absoluta tras el cambio.
+- [OK] Redirección de error `>&` solo en último mandato  
+  Ejemplo comandos:  
+  - `ls /noexiste >& err.txt`  
+  - `cat < err.txt`  
+  Salida esperada: línea con el error de `ls` (permite variaciones de sistema), minishell sigue funcionando.[1]
 
-[ ] `jobs` provoca segfault tras lanzar un bg:
-     - sleep 5 & ; jobs
-     Esperado: listar trabajos (Running/Done) con identificador.
+### Pipes en foreground
+- [OK] Pipeline de dos mandatos  
+  Ejemplo comando: `echo hola | tr a-z A-Z`  
+  Salida esperada: `HOLA`.[1]
 
-[ ] `fg` provoca segfault:
-     - sleep 5 & ; fg
-     Esperado: traer job a foreground y esperar (sin tumbar minishell).
+- [OK] Pipeline de dos mandatos con medición  
+  Ejemplo comando: `/usr/bin/printf "a\nb\nc\n" | wc -l`  
+  Salida esperada: `3`.[1]
 
-[ ] Quoting de argumentos (comillas se mantienen literales):
-     - cat < in.txt                     => imprime con comillas: "hola mundo"
-     - echo "con espacios y comillas"   => imprime con comillas
-     - echo 'texto con comillas simples'=> imprime con comillas
-     - printf "uno dos tres" | tr ' ' '\n' | sort | uniq -c
-       => warnings de printf y error de tr por comillas literales
-     - printf "c b a\n" | sort | uniq | tr a-z A-Z
-       => warning y salida parcial con comillas
-     Esperado: eliminar comillas de argv y nombres de fichero, manteniendo espacios internos.
+- [OK] Pipeline de más de dos mandatos  
+  Ejemplo comando: `seq 1 5 | paste -sd+ - | bc`  
+  Salida esperada: `15`.[1]
 
-[ ] Pipeline con redirección de salida conserva comillas en el fichero:
-     - cat < in.txt | tr a-z A-Z > upper.txt
-     - cat upper.txt                   => "HOLA MUNDO"
-     Esperado: HOLA MUNDO (sin comillas).
+### Pipes + redirecciones
+- [APARECE RARUNO CON COMILLAS] `<` en primer mandato y `>` en último  
+  Ejemplo comandos:  
+  - `/usr/bin/printf "b\na\nb\n" > in.txt`  
+  - `sort < in.txt | uniq -c > out.txt`  
+  - `cat out.txt`  
+  Salida esperada: recuento correcto, p. ej. `1 a` y `2 b` (según orden del sort).[1]
 
-[ ] `:` como mandato provoca segfault:
-     - : > vacio.txt
-     Esperado: o bien builtin `:` (no-op) o error de mandato (pero sin segfault).
+- [ls: cannot access '/noexiste': No such file or directory] `>&` en último mandato con pipe  
+  Ejemplo comando: `ls /noexiste | tr a-z A-Z >& err_pipe.txt`  
+  Salida esperada: `err_pipe.txt` contiene el error (posiblemente en mayúsculas si el último lo transforma).[1]
 
-PENDIENTE / AJUSTES DE ESPECIFICACIÓN
--------------------------------------
-[ ] Mensajes de error de redirecciones (formato exacto del enunciado):
-     - cat < nohay.txt
-     - echo x > /ruta/que/no/existe/out.txt
-     - ls >& /ruta/que/no/existe/err.txt
-     Actual: "No se pudo abrir archivo ..."
-     Esperado: "<fichero>: Error. <descripción>"
+### Comportamiento de background (&)
+- [OK] Ejecución en background no bloquea y muestra aviso  
+  Ejemplo comando: `sleep 2 &`  
+  Salida esperada: línea del tipo `[n] PID en background` y el prompt `msh> ` aparece inmediatamente.[1]
 
-[ ] Mensaje al lanzar en background:
-     Actual: "[n] PID en background"
-     Mostrar exactamente [PID] (sin texto adicional)
+- [OK] Prompt usable mientras hay trabajos en background  
+  Ejemplo secuencia:  
+  - `sleep 5 &`  
+  - inmediatamente después: `echo sigo`  
+  Salida esperada: `sigo` aparece sin esperar a que termine `sleep`.[1]
 
-[ ] fg sin argumento trae el último job; reorienta terminal (process group + tcsetpgrp)
+- [OK] jobs muestra trabajos Running  
+  Ejemplo secuencia:  
+  - `sleep 5 &`  
+  - `jobs`  
+  Salida esperada: una línea con `[n]    Running    ...sleep 5 &` (formato similar) para el trabajo.[1]
 
-CRITERIOS DE ACEPTACIÓN RESUMIDOS
----------------------------------
-- Mandato no encontrado: imprime "<cmd>: No se encuentra el mandato" (stderr) y continúa sin segfault (exit code 127 en hijo).
-- `cd` (sin pipes): cambia dir (o error) e imprime ruta absoluta con getcwd(); `cd` sin args usa $HOME.
-- `jobs` / `fg`: no crashean; `jobs` lista; `fg` trae y espera; Ctrl-C afecta al job fg, no a la shell.
-- Quoting: comillas externas se retiran en argv y en nombres de redirección; espacios internos se conservan.
-- Redirecciones: `<` solo en primer mandato; `>` y `>&` solo en último; errores con el formato exacto "fichero: Error. ...".
-- Background: prompt inmediato; salida de anuncio conforme al enunciado.
+- [OK] jobs actualiza a Done cuando terminan  
+  Ejemplo secuencia:  
+  - `sleep 2 &`  
+  - esperar ~3 segundos  
+  - `jobs`  
+  Salida esperada: el mismo trabajo marcado como `Done`.[1]
 
-PRIORIDAD SUGERIDA
-------------------
-1) Evitar segfaults: mandato inexistente, `cd`, `jobs`, `fg`, `:`.
-2) Reparar quoting (argv y redirecciones) → arregla múltiples fallos colaterales.
-3) Implementar correctamente `cd`, `jobs`, `fg` (aunque sea versión mínima sin control de terminal).
-4) Ajustar formato de mensajes (redirecciones, background).
-5) Re-verificar casos: `cat upper.txt` debe salir sin comillas; pipelines con printf/tr deben funcionar sin warnings/errores.
+### fg (foreground)
+- [OK] fg con índice trae un trabajo  
+  Ejemplo secuencia:  
+  - `sleep 4 &`  
+  - `jobs` (anotar índice n)  
+  - `fg n`  
+  Salida esperada: la shell se bloquea hasta que acaba `sleep 4` y luego muestra `msh> `; no hay segfault.[1]
+
+- [OK] fg sin argumento usa último trabajo  
+  Ejemplo secuencia:  
+  - `sleep 3 &`  
+  - `sleep 5 &`  
+  - `fg`  
+  Salida esperada: trae el último lanzado (el de 5 segundos) a foreground y espera a que termine.[1]
+
+- [OK] fg sobre índice inválido muestra error y sigue  
+  Ejemplo comando: `fg 999`  
+  Salida esperada: mensaje `fg: número de job inválido` y minishell sigue.[1]
+
+- [OK] fg sobre trabajo ya terminado informa y no crashea  
+  Ejemplo secuencia:  
+  - `sleep 1 &`  
+  - esperar 2–3 segundos  
+  - `jobs` (ver marcado como Done)  
+  - `fg n` (índice de ese trabajo)  
+  Salida esperada: mensaje `fg: el trabajo ya ha finalizado` y minishell sigue.[1]
+
+### Manejo de señales
+- [NO APARECE SALTO DE LÍNEA] Ctrl+C mata solo al proceso en foreground  
+  Ejemplo secuencia:  
+  - `sleep 10`  
+  - pulsar Ctrl+C  
+  Salida esperada: se interrumpe `sleep 10`, aparece un salto de línea y luego `msh> `; minishell no termina.[1]
+
+- [FINALIZA EL BACKGROUND] Ctrl+C no mata la shell ni el background  
+  Ejemplo secuencia:  
+  - `sleep 10 &`  
+  - pulsar Ctrl+C varias veces  
+  - `jobs`  
+  Salida esperada: minishell sigue respondiendo y el `sleep 10` sigue en Running en `jobs`.[1]
+
+- [OK CREO] Ctrl+\ no mata la shell  
+  Ejemplo: `sleep 10` y pulsar Ctrl+\  
+  Salida esperada: el proceso foreground puede terminar según acción por defecto, pero minishell continúa y muestra `msh> `.[1]
+
+### Builtins internos
+- [OK] exit sin código sale de la minishell  
+  Ejemplo comando: `exit`  
+  Salida esperada: termina minishell y vuelve a la shell del sistema.[1]
+
+- [OK] exit con código devuelve ese estado  
+  Ejemplo secuencia (desde shell del sistema):  
+  - `./myshell`  
+  - dentro: `exit 7`  
+  - fuera: `echo $?`  
+  Salida esperada: `7`.[1]
+
+- [OK] cd a ruta absoluta  
+  Ejemplo comando: `cd /`  
+  Salida esperada: cambia al raíz y muestra la ruta absoluta de trabajo (por ejemplo `/`).[1]
+
+- [OK] cd a ruta relativa  
+  Ejemplo secuencia:  
+  - `cd /`  
+  - `cd tmp` (si existe)  
+  Salida esperada: cwd que termina en `/tmp` (o similar), sin segfault.[1]
+
+- [OK] cd sin argumentos usa HOME  
+  Ejemplo comandos:  
+  - `cd /`  
+  - `cd`  
+  Salida esperada: ruta absoluta de HOME, por ejemplo `/home/usuario`.[1]
+
+- [OK] cd a ruta inexistente muestra error legible  
+  Ejemplo comando: `cd /ruta/que/no/existe`  
+  Salida esperada: mensaje `cd: /ruta/que/no/existe: <descripción>` y el directorio actual no cambia.[1]
+
+### Errores y mensajes
+- [OK] Mandato no encontrado: mensaje correcto y minishell sigue  
+  Ejemplo comando: `comando_que_no_existe_123`  
+  Salida esperada: `Mandato: Error. No se encuentra el mandato comando_que_no_existe_123` en stderr; minishell sigue aceptando órdenes.[1]
+
+- [OK] Error de apertura en redirección de entrada  
+  Ejemplo comando: `wc -l < nofile.txt`  
+  Salida esperada: mensaje de error con `nofile.txt` y descripción; no se cae la minishell.[1]
+
+- [OK] Error de apertura en redirección de salida  
+  Ejemplo comando: `echo x > /ruta/que/no/existe/out.txt`  
+  Salida esperada: mensaje de error con ruta y descripción; la shell continúa.[1]
+
+### Comportamiento del parser (según librería)
+- [OK] Argumentos con espacios conservan contenido  
+  Ejemplo comandos:  
+  - `echo "hola mundo"`  
+  - `echo 'con espacios dentro'`  
+  Salida esperada: se muestran las frases con espacios internos correctos (el parser decide si mantiene o quita comillas, pero la minishell no crashea ni rompe argv).[1]
+
+- [OK] Redirecciones con nombres que contienen caracteres especiales (sin espacios)  
+  Ejemplo comandos:  
+  - `echo hola > fichero_1.txt`  
+  - `cat < fichero_1.txt`  
+  Salida esperada: `hola`, sin errores de parsing.[1]
+
+### Robustez general
+- [OK] Múltiples pipelines seguidos no agotan descriptores  
+  Ejemplo: ejecutar en la shell del sistema algo como:  
+  `for i in $(seq 1 20); do echo "seq 1 10 | wc -l"; done | ./myshell`  
+  Salida esperada: la minishell ejecuta todas las líneas, siempre devuelve `10`, y no se bloquea ni se queda sin FDs.[1]
+
+- [OK] jobs y fg nunca provocan segfault incluso con pocos o muchos trabajos  
+  Ejemplo: lanzar varios `sleep 1 &`, ejecutar `jobs` y diferentes `fg n`, incluidos índices inválidos, sin que se caiga minishell.[1]
