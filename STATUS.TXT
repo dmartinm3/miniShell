@@ -212,3 +212,9 @@ MiniShell – Checklist final
 
 - [OK] jobs y fg nunca provocan segfault incluso con pocos o muchos trabajos  
   Ejemplo: lanzar varios `sleep 1 &`, ejecutar `jobs` y diferentes `fg n`, incluidos índices inválidos, sin que se caiga minishell.[1]
+
+  COSAS QUE MIRAR PARA PARECER LEGALES:
+
+  - Los char mejor ponerlos como uint8_t
+  - Revisar si ha puesto punteros como unsigned int y mantener el estilo en el resto
+  - Comprobar que se hace free de todo lo que reserva memoria
