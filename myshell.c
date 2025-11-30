@@ -44,6 +44,8 @@ typedef struct
 
 static trabajo_t trabajos[MAX_TRABAJOS];
 
+static pid_t shell_pgid = 0;
+
 /* PIDs del trabajo actualmente en foreground para reenviar Ctrl+C */
 static volatile sig_atomic_t fg_num_pids = 0;
 static volatile sig_atomic_t fg_pids[MAX_PROC_EN_TUBERIA] = {0};
@@ -81,7 +83,7 @@ static void instalarSenalesShell(void)
     sa.sa_handler = manejador_sigint;
     sigaction(SIGINT, &sa, NULL);
 
-    /* Ctrl+\ se ignora en la shell */
+    /* Ctrl+\ se maneja igual visualmente (salto de línea), pero sin matar la shell */
     sa.sa_handler = manejador_sigint;
     sigaction(SIGQUIT, &sa, NULL);
 }
@@ -408,12 +410,13 @@ static void ejecutarLinea(tline *linea)
         {
             /* PROCESO HIJO */
 
-            /* Cada hijo se coloca en su propio grupo de procesos,
-               separado del de la shell, para que el terminal
-               no le envíe directamente SIGINT/SIGQUIT. */
-            if (setpgid(0, 0) < 0)
+            /* CAMBIO: solo separar en otro grupo si es background */
+            if (linea->background)
             {
-                /* Si falla, no es crítico en este contexto docente. */
+                if (setpgid(0, 0) < 0)
+                {
+                    /* Si falla, no es crítico en este contexto docente. */
+                }
             }
 
             /* Los hijos usan la acción por defecto de las señales. */
@@ -565,6 +568,7 @@ static void builtinCd(const tcommand *cmd)
 
 int main(void)
 {
+    shell_pgid = getpgrp();
     instalarSenalesShell();
 
     char *bufLinea = NULL;
