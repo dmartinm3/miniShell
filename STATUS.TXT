@@ -129,20 +129,20 @@ MiniShell – Checklist final
   Salida esperada: mensaje `fg: el trabajo ya ha finalizado` y minishell sigue.[1]
 
 ### Manejo de señales
-- [NO APARECE SALTO DE LÍNEA] Ctrl+C mata solo al proceso en foreground  
+- [OK] Ctrl+C mata solo al proceso en foreground  
   Ejemplo secuencia:  
   - `sleep 10`  
   - pulsar Ctrl+C  
   Salida esperada: se interrumpe `sleep 10`, aparece un salto de línea y luego `msh> `; minishell no termina.[1]
 
-- [FINALIZA EL BACKGROUND] Ctrl+C no mata la shell ni el background  
+- [OK] Ctrl+C no mata la shell ni el background  
   Ejemplo secuencia:  
   - `sleep 10 &`  
   - pulsar Ctrl+C varias veces  
   - `jobs`  
   Salida esperada: minishell sigue respondiendo y el `sleep 10` sigue en Running en `jobs`.[1]
 
-- [OK CREO] Ctrl+\ no mata la shell  
+- [OK] Ctrl+\ no mata la shell  
   Ejemplo: `sleep 10` y pulsar Ctrl+\  
   Salida esperada: el proceso foreground puede terminar según acción por defecto, pero minishell continúa y muestra `msh> `.[1]
 
