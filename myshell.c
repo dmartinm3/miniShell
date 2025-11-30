@@ -4,21 +4,24 @@ Autoría: Héctor Julián Alijas y Daniel Martín Muñoz
 */
 
 #define _POSIX_C_SOURCE 200809L
+
 #include <stdio.h>
 #include <stdlib.h>
-#include <unistd.h>
-#include <fcntl.h>
-#include <sys/wait.h>
-#include <errno.h>
 #include <string.h>
+#include <unistd.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <fcntl.h>
+#include <errno.h>
+#include <signal.h>
 #include <stdbool.h>
 #include <stdarg.h>
-#include <signal.h>
-#include <sys/types.h>
 #include <limits.h>
+
 #include "parser.h"
 
 #define PROMPT "msh> "
+
 #define MAX_TRABAJOS 128
 #define MAX_PROC_EN_TUBERIA 32
 #define TAM_RESUMEN 512
@@ -41,22 +44,45 @@ typedef struct
 
 static trabajo_t trabajos[MAX_TRABAJOS];
 
+/* PIDs del trabajo actualmente en foreground para reenviar Ctrl+C */
+static volatile sig_atomic_t fg_num_pids = 0;
+static volatile sig_atomic_t fg_pids[MAX_PROC_EN_TUBERIA] = {0};
+
+/* Manejador de SIGINT en la shell:
+   - Reenvía SIGINT a todos los procesos del trabajo en foreground
+   - No termina la minishell
+*/
 static void manejador_sigint(int sig)
 {
     (void)sig;
+
+    for (int i = 0; i < fg_num_pids; ++i)
+    {
+        pid_t p = fg_pids[i];
+        if (p > 0)
+        {
+            /* Enviamos SIGINT solo al foreground actual */
+            kill(p, SIGINT);
+        }
+    }
+
     ssize_t r = write(STDOUT_FILENO, "\n", 1);
     (void)r;
 }
 
+/* Instala el manejo de señales de la shell */
 static void instalarSenalesShell(void)
 {
     struct sigaction sa;
     sigemptyset(&sa.sa_mask);
     sa.sa_flags = 0;
-    sa.sa_handler = manejador_sigint;
 
-    sigaction(SIGINT, &sa, NULL); // Ctrl+C → salto y EINTR
-    sa.sa_handler = SIG_IGN;      // SIGQUIT lo ignoramos
+    /* Ctrl+C → se maneja con manejador_sigint (no se termina la shell) */
+    sa.sa_handler = manejador_sigint;
+    sigaction(SIGINT, &sa, NULL);
+
+    /* Ctrl+\ se ignora en la shell */
+    sa.sa_handler = SIG_IGN;
     sigaction(SIGQUIT, &sa, NULL);
 }
 
@@ -124,10 +150,12 @@ static void actualizarTrabajosNoBloqueante(void)
             }
         }
     }
+
     for (int j = 0; j < MAX_TRABAJOS; ++j)
     {
         if (!trabajos[j].usado || trabajos[j].estado == trabajoTerminado)
             continue;
+
         bool algunoVivo = false;
         for (int k = 0; k < trabajos[j].numPids; ++k)
         {
@@ -155,14 +183,12 @@ static int anadirTrabajo(pid_t *pids, int num, const char *resumen)
             trabajos[j].numPids = (num > MAX_PROC_EN_TUBERIA) ? MAX_PROC_EN_TUBERIA : num;
             for (int k = 0; k < trabajos[j].numPids; ++k)
                 trabajos[j].pids[k] = pids[k];
+
             if (resumen)
-            {
                 snprintf(trabajos[j].resumen, TAM_RESUMEN, "%s", resumen);
-            }
             else
-            {
                 snprintf(trabajos[j].resumen, TAM_RESUMEN, "(pipeline)");
-            }
+
             return j + 1;
         }
     }
@@ -208,6 +234,7 @@ static void builtinFg(int indice1)
         fprintf(stderr, "fg: número de job inválido\n");
         return;
     }
+
     trabajo_t *jb = &trabajos[indice1 - 1];
     actualizarTrabajosNoBloqueante();
     if (jb->estado == trabajoTerminado)
@@ -215,8 +242,22 @@ static void builtinFg(int indice1)
         fprintf(stderr, "fg: el trabajo ya ha finalizado\n");
         return;
     }
-    printf("Reanudando [%d] %s\n", indice1, jb->resumen[0] ? jb->resumen : "(pipeline)");
+
+    printf("Reanudando [%d] %s\n", indice1,
+           jb->resumen[0] ? jb->resumen : "(pipeline)");
     fflush(stdout);
+
+    /* Establecemos los PIDs en foreground para reenviar Ctrl+C */
+    fg_num_pids = 0;
+    for (int k = 0; k < jb->numPids && k < MAX_PROC_EN_TUBERIA; ++k)
+    {
+        if (jb->pids[k] > 0)
+        {
+            fg_pids[fg_num_pids++] = jb->pids[k];
+        }
+    }
+
+    /* Esperar a que terminen todos los procesos del trabajo */
     for (;;)
     {
         bool algunoVivo = false;
@@ -238,6 +279,10 @@ static void builtinFg(int indice1)
         if (!algunoVivo)
             break;
     }
+
+    /* Limpiar foreground */
+    fg_num_pids = 0;
+
     jb->estado = trabajoTerminado;
     jb->usado = false;
     jb->numPids = 0;
@@ -254,9 +299,21 @@ static void construirResumenLinea(const tline *linea, char *dst, size_t tam)
         const tcommand *c = &linea->commands[i];
         for (int a = 0; a < c->argc; ++a)
         {
-            int n = snprintf(dst + strlen(dst), queda, "%s%s",
+            bool tieneEspacios = (strchr(c->argv[a], ' ') != NULL);
+            int n;
+            if (tieneEspacios)
+            {
+                n = snprintf(dst + strlen(dst), queda, "%s\"%s\"",
                              (a ? " " : (i ? " | " : "")),
                              c->argv[a]);
+            }
+            else
+            {
+                n = snprintf(dst + strlen(dst), queda, "%s%s",
+                             (a ? " " : (i ? " | " : "")),
+                             c->argv[a]);
+            }
+
             if (n < 0 || (size_t)n >= queda)
             {
                 dst[tam - 1] = '\0';
@@ -267,19 +324,22 @@ static void construirResumenLinea(const tline *linea, char *dst, size_t tam)
     }
     if (linea->redirect_input)
     {
-        int n = snprintf(dst + strlen(dst), queda, " < %s", linea->redirect_input);
+        int n = snprintf(dst + strlen(dst), queda,
+                         " < %s", linea->redirect_input);
         if (n > 0)
             queda -= (size_t)n;
     }
     if (linea->redirect_output)
     {
-        int n = snprintf(dst + strlen(dst), queda, " > %s", linea->redirect_output);
+        int n = snprintf(dst + strlen(dst), queda,
+                         " > %s", linea->redirect_output);
         if (n > 0)
             queda -= (size_t)n;
     }
     if (linea->redirect_error)
     {
-        int n = snprintf(dst + strlen(dst), queda, " >& %s", linea->redirect_error);
+        int n = snprintf(dst + strlen(dst), queda,
+                         " >& %s", linea->redirect_error);
         if (n > 0)
             queda -= (size_t)n;
     }
@@ -294,9 +354,10 @@ static void ejecutarLinea(tline *linea)
 {
     if (!linea || linea->ncommands <= 0)
         return;
-    const int n = linea->ncommands;
 
+    const int n = linea->ncommands;
     int (*tuberias)[2] = NULL;
+
     if (n > 1)
     {
         tuberias = calloc((size_t)(n - 1), sizeof(int[2]));
@@ -327,7 +388,6 @@ static void ejecutarLinea(tline *linea)
     for (int i = 0; i < n; ++i)
     {
         tcommand *cmd = &linea->commands[i];
-
         pid_t pid = fork();
         if (pid < 0)
         {
@@ -346,40 +406,42 @@ static void ejecutarLinea(tline *linea)
 
         if (pid == 0)
         {
-            /* Restaurar señales SOLO si es foreground */
-            if (linea->background)
+            /* PROCESO HIJO */
+
+            /* Cada hijo se coloca en su propio grupo de procesos,
+               separado del de la shell, para que el terminal
+               no le envíe directamente SIGINT/SIGQUIT. */
+            if (setpgid(0, 0) < 0)
             {
-                // jobs en background NO deben morir con Ctrl+C
-                struct sigaction sa;
-                sigemptyset(&sa.sa_mask);
-                sa.sa_flags = 0;
-                sa.sa_handler = SIG_IGN;
-                sigaction(SIGINT, &sa, NULL);
-            }
-            else
-            {
-                // foreground sí debe morir con Ctrl+C
-                restaurarSenalesEnHijo();
+                /* Si falla, no es crítico en este contexto docente. */
             }
 
+            /* Los hijos usan la acción por defecto de las señales. */
+            restaurarSenalesEnHijo();
+
+            /* Redirecciones */
             if (i == 0 && linea->redirect_input)
             {
-                abrirYDuplicarOSalir(linea->redirect_input, O_RDONLY, 0, STDIN_FILENO,
+                abrirYDuplicarOSalir(linea->redirect_input, O_RDONLY, 0,
+                                     STDIN_FILENO,
                                      "No se pudo abrir archivo de entrada");
             }
             if (i == n - 1 && linea->redirect_output)
             {
                 abrirYDuplicarOSalir(linea->redirect_output,
                                      O_WRONLY | O_CREAT | O_TRUNC, 0644,
-                                     STDOUT_FILENO, "No se pudo abrir archivo de salida");
+                                     STDOUT_FILENO,
+                                     "No se pudo abrir archivo de salida");
             }
             if (i == n - 1 && linea->redirect_error)
             {
                 abrirYDuplicarOSalir(linea->redirect_error,
                                      O_WRONLY | O_CREAT | O_TRUNC, 0644,
-                                     STDERR_FILENO, "No se pudo abrir archivo de error");
+                                     STDERR_FILENO,
+                                     "No se pudo abrir archivo de error");
             }
 
+            /* Tuberías */
             if (tuberias)
             {
                 if (i > 0)
@@ -401,14 +463,18 @@ static void ejecutarLinea(tline *linea)
 
             if (!cmd->filename || !cmd->argv || !cmd->argv[0])
             {
-                const char *mostrado = (cmd->argv && cmd->argv[0]) ? cmd->argv[0] : "(null)";
+                const char *mostrado =
+                    (cmd->argv && cmd->argv[0]) ? cmd->argv[0] : "(null)";
                 mandatoNoEncontrado(mostrado);
                 _exit(127);
             }
+
             execvp(cmd->filename, cmd->argv);
             mandatoNoEncontrado(cmd->argv[0]);
             _exit(127);
         }
+
+        /* PROCESO PADRE */
 
         if (numHijos < MAX_PROC_EN_TUBERIA)
             pidsHijos[numHijos++] = pid;
@@ -435,28 +501,35 @@ static void ejecutarLinea(tline *linea)
             printf("[%d] %d en background\n", idx, (int)ultimo);
             fflush(stdout);
         }
+        /* No tocamos fg_pids: no es foreground. */
         return;
+    }
+
+    /* Trabajo en foreground:
+       rellenamos fg_pids para que Ctrl+C pueda reenviar SIGINT. */
+    fg_num_pids = 0;
+    for (int i = 0; i < numHijos && i < MAX_PROC_EN_TUBERIA; ++i)
+    {
+        fg_pids[fg_num_pids++] = pidsHijos[i];
     }
 
     for (int i = 0; i < numHijos; ++i)
     {
-
         int status;
         while (waitpid(pidsHijos[i], &status, 0) < 0 && errno == EINTR)
         {
             /* repetir si EINTR */
         }
 
-        /* Si el hijo murió por Ctrl+C y NO estamos en background → imprimir salto */
-        if (!linea->background &&
-            WIFSIGNALED(status) &&
-            WTERMSIG(status) == SIGINT)
+        if (WIFSIGNALED(status) && WTERMSIG(status) == SIGINT)
         {
-
             ssize_t ign = write(STDOUT_FILENO, "\n", 1);
-            (void)ign; // evitar warning -Wunused-result
+            (void)ign;
         }
     }
+
+    /* Trabajo en foreground terminado */
+    fg_num_pids = 0;
 }
 
 /* Cambia de directorio: cd [ruta] o cd (HOME). */
@@ -476,11 +549,13 @@ static void builtinCd(const tcommand *cmd)
     {
         destino = cmd->argv[1];
     }
+
     if (chdir(destino) != 0)
     {
         fprintf(stderr, "cd: %s: %s\n", destino, strerror(errno));
         return;
     }
+
     char cwd[PATH_MAX];
     if (getcwd(cwd, sizeof(cwd)))
     {
@@ -506,12 +581,13 @@ int main(void)
         {
             if (errno == EINTR)
             {
-                // Ctrl+C → nueva línea y nuevo prompt
+                /* Ctrl+C mientras esperamos línea:
+                   el manejador ya ha impreso '\n', solo limpiamos y seguimos. */
                 clearerr(stdin);
                 continue;
             }
             putchar('\n');
-            break; // EOF real
+            break; /* EOF real */
         }
 
         if (leidos == 1 && bufLinea[0] == '\n')
@@ -524,7 +600,8 @@ int main(void)
         if (linea->ncommands == 1)
         {
             tcommand *cmd = &linea->commands[0];
-            const char *cmd0 = (cmd->argv && cmd->argv[0]) ? cmd->argv[0] : NULL;
+            const char *cmd0 =
+                (cmd->argv && cmd->argv[0]) ? cmd->argv[0] : NULL;
 
             if (cmd0 && strcmp(cmd0, "exit") == 0)
             {
@@ -534,11 +611,13 @@ int main(void)
                 free(bufLinea);
                 exit(status);
             }
+
             if (cmd0 && strcmp(cmd0, "jobs") == 0)
             {
                 builtinJobs();
                 continue;
             }
+
             if (cmd0 && strcmp(cmd0, "fg") == 0)
             {
                 int idx;
@@ -558,6 +637,7 @@ int main(void)
                 builtinFg(idx);
                 continue;
             }
+
             if (cmd0 && strcmp(cmd0, "cd") == 0)
             {
                 builtinCd(cmd);
