@@ -82,7 +82,7 @@ static void instalarSenalesShell(void)
     sigaction(SIGINT, &sa, NULL);
 
     /* Ctrl+\ se ignora en la shell */
-    sa.sa_handler = SIG_IGN;
+    sa.sa_handler = manejador_sigint;
     sigaction(SIGQUIT, &sa, NULL);
 }
 
