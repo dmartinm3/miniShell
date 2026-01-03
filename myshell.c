@@ -1,6 +1,6 @@
 /*
- * Práctica de Sistemas Operativos - MiniShell
- * Autores: Héctor Julián Alijas y Daniel Martín
+ * Práctica de Sistemas Operativos - miniShell
+ * Autores: Héctor Julián Alijas y Daniel Martín Muñoz
  */
 
 #include <stdio.h>
