@@ -1,9 +1,7 @@
 /*
-Práctica de Sistemas Operativos - MiniShell
-Autoría: Héctor Julián Alijas y Daniel Martín Muñoz
-*/
-
-#define _POSIX_C_SOURCE 200809L
+ * Práctica de Sistemas Operativos - MiniShell
+ * Autores: Héctor Julián Alijas y Daniel Martín
+ */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -11,647 +9,385 @@ Autoría: Héctor Julián Alijas y Daniel Martín Muñoz
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/wait.h>
-#include <fcntl.h>
-#include <errno.h>
 #include <signal.h>
-#include <stdbool.h>
-#include <stdarg.h>
-#include <limits.h>
-
+#include <errno.h>
 #include "parser.h"
 
 #define PROMPT "msh> "
+/* Límites */
+#define MAX_LINE 1024
+#define MAX_JOBS 20
+#define MAX_PIDS_PER_JOB 32
 
-#define MAX_TRABAJOS 128
-#define MAX_PROC_EN_TUBERIA 32
-#define TAM_RESUMEN 512
+/* Estados posibles de un trabajo en background */
+typedef enum { LIBRE, EJECUTANDO, FINALIZADO } estado_t;
 
-typedef enum
-{
-    trabajoEnEjec = 0,
-    trabajoTerminado = 1
-} estadoTrabajo_t;
+/* Estructura para gestionar trabajos en segundo plano */
+typedef struct {
+    pid_t pids[MAX_PIDS_PER_JOB];
+    int npids;
+    char mandato[MAX_LINE];
+    estado_t estado;
+} job_t;
 
-/* Entrada en la tabla de trabajos en background */
-typedef struct
-{
-    pid_t pids[MAX_PROC_EN_TUBERIA];
-    int numPids;
-    char resumen[TAM_RESUMEN];
-    estadoTrabajo_t estado;
-    bool usado;
-} trabajo_t;
+job_t jobs[MAX_JOBS];
 
-static trabajo_t trabajos[MAX_TRABAJOS];
+/* Variable global para reenvío de señales */
+static volatile pid_t fg_pid = 0;
 
-static pid_t shell_pgid = 0;
+/* --- Manejadores de Señales --- */
 
-/* PIDs del trabajo actualmente en foreground para reenviar Ctrl+C */
-static volatile sig_atomic_t fg_num_pids = 0;
-static volatile sig_atomic_t fg_pids[MAX_PROC_EN_TUBERIA] = {0};
-
-/* Manejador de SIGINT en la shell:
-   - Reenvía SIGINT a todos los procesos del trabajo en foreground
-   - No termina la minishell
-*/
-static void manejador_sigint(int sig)
-{
+/* Manejador de SIGINT (Ctrl+C) */
+void manejador_ctrl_c(int sig) {
     (void)sig;
+    signal(SIGINT, manejador_ctrl_c);
 
-    for (int i = 0; i < fg_num_pids; ++i)
-    {
-        pid_t p = fg_pids[i];
-        if (p > 0)
-        {
-            /* Enviamos SIGINT solo al foreground actual */
-            kill(p, SIGINT);
-        }
+    if (fg_pid > 0) {
+        kill(fg_pid, SIGINT);
+    } else {
+        printf("\n");
+        fflush(stdout);
     }
-
-    ssize_t r = write(STDOUT_FILENO, "\n", 1);
-    (void)r;
 }
 
-/* Instala el manejo de señales de la shell */
-static void instalarSenalesShell(void)
-{
-    struct sigaction sa;
-    sigemptyset(&sa.sa_mask);
-    sa.sa_flags = 0;
+/* Manejador de SIGQUIT (Ctrl+\) */
+void manejador_ctrl_quit(int sig) {
+    (void)sig;
+    signal(SIGQUIT, manejador_ctrl_quit);
 
-    /* Ctrl+C → se maneja con manejador_sigint (no se termina la shell) */
-    sa.sa_handler = manejador_sigint;
-    sigaction(SIGINT, &sa, NULL);
-
-    /* Ctrl+\ se maneja igual visualmente (salto de línea), pero sin matar la shell */
-    sa.sa_handler = manejador_sigint;
-    sigaction(SIGQUIT, &sa, NULL);
-}
-
-/* Los procesos ejecutados restauran la acción por defecto de las señales. */
-static void restaurarSenalesEnHijo(void)
-{
-    struct sigaction sa;
-    sigemptyset(&sa.sa_mask);
-    sa.sa_flags = 0;
-    sa.sa_handler = SIG_DFL;
-    sigaction(SIGINT, &sa, NULL);
-    sigaction(SIGQUIT, &sa, NULL);
-}
-
-/* Imprime un error y termina solo el proceso hijo. */
-static void morirEnHijo(const char *fmt, ...)
-{
-    va_list ap;
-    va_start(ap, fmt);
-    vfprintf(stderr, fmt, ap);
-    va_end(ap);
-    _exit(1);
-}
-
-/* Abre un fichero y redirige al descriptor objetivo; si falla, termina el hijo. */
-static void abrirYDuplicarOSalir(const char *ruta, int flags, mode_t modo,
-                                 int fdObjetivo, const char *que)
-{
-    int fd = open(ruta, flags, modo);
-    if (fd < 0)
-        morirEnHijo("%s: %s: %s\n", que, ruta, strerror(errno));
-    if (dup2(fd, fdObjetivo) < 0)
-    {
-        int e = errno;
-        close(fd);
-        morirEnHijo("dup2 falló: %s\n", strerror(e));
+    if (fg_pid > 0) {
+        kill(fg_pid, SIGQUIT);
     }
-    close(fd);
 }
 
-/* Mensaje cuando no existe el mandato. */
-static void mandatoNoEncontrado(const char *cmd)
-{
-    fprintf(stderr, "Mandato: Error. No se encuentra el mandato %s\n", cmd);
+/* --- Gestión de Jobs --- */
+
+/* Inicialización de la tabla de trabajos al arrancar */
+void init_jobs() {
+    int i;
+    for (i = 0; i < MAX_JOBS; i++) {
+        jobs[i].estado = LIBRE;
+        jobs[i].npids = 0;
+    }
 }
 
-/* Recolecta hijos terminados sin bloquear y actualiza estados de trabajos. */
-static void actualizarTrabajosNoBloqueante(void)
-{
-    int status;
-    pid_t pid;
-    while ((pid = waitpid(-1, &status, WNOHANG)) > 0)
-    {
-        for (int j = 0; j < MAX_TRABAJOS; ++j)
-        {
-            if (!trabajos[j].usado)
-                continue;
-            for (int k = 0; k < trabajos[j].numPids; ++k)
-            {
-                if (trabajos[j].pids[k] == pid)
-                {
-                    trabajos[j].pids[k] = 0;
-                    break;
-                }
+/* Añadir un nuevo trabajo a la primera posición libre */
+void add_job(pid_t *pids, int n, char *linea) {
+    int i, j;
+    for (i = 0; i < MAX_JOBS; i++) {
+        if (jobs[i].estado == LIBRE) {
+            jobs[i].npids = n;
+            for(j = 0; j < n; j++) {
+                jobs[i].pids[j] = pids[j];
             }
-        }
-    }
+            jobs[i].estado = EJECUTANDO;
+            strncpy(jobs[i].mandato, linea, MAX_LINE - 1);
+            jobs[i].mandato[strcspn(jobs[i].mandato, "\n")] = 0;
 
-    for (int j = 0; j < MAX_TRABAJOS; ++j)
-    {
-        if (!trabajos[j].usado || trabajos[j].estado == trabajoTerminado)
-            continue;
-
-        bool algunoVivo = false;
-        for (int k = 0; k < trabajos[j].numPids; ++k)
-        {
-            if (trabajos[j].pids[k] > 0)
-            {
-                algunoVivo = true;
-                break;
-            }
-        }
-        if (!algunoVivo)
-            trabajos[j].estado = trabajoTerminado;
-    }
-}
-
-/* Añade un trabajo en background y devuelve su índice 1..N. */
-static int anadirTrabajo(pid_t *pids, int num, const char *resumen)
-{
-    actualizarTrabajosNoBloqueante();
-    for (int j = 0; j < MAX_TRABAJOS; ++j)
-    {
-        if (!trabajos[j].usado)
-        {
-            trabajos[j].usado = true;
-            trabajos[j].estado = trabajoEnEjec;
-            trabajos[j].numPids = (num > MAX_PROC_EN_TUBERIA) ? MAX_PROC_EN_TUBERIA : num;
-            for (int k = 0; k < trabajos[j].numPids; ++k)
-                trabajos[j].pids[k] = pids[k];
-
-            if (resumen)
-                snprintf(trabajos[j].resumen, TAM_RESUMEN, "%s", resumen);
-            else
-                snprintf(trabajos[j].resumen, TAM_RESUMEN, "(pipeline)");
-
-            return j + 1;
+            printf("[%d] %d\n", i + 1, pids[n-1]);
+            return;
         }
     }
     fprintf(stderr, "jobs: límite de trabajos alcanzado\n");
-    return -1;
 }
 
-/* Lista los trabajos y su estado. */
-static void builtinJobs(void)
-{
-    actualizarTrabajosNoBloqueante();
-    bool alguno = false;
-    for (int j = 0; j < MAX_TRABAJOS; ++j)
-    {
-        if (!trabajos[j].usado)
-            continue;
-        alguno = true;
-        printf("[%d]\t%s\t%s\n",
-               j + 1,
-               trabajos[j].estado == trabajoEnEjec ? "Running" : "Done",
-               trabajos[j].resumen[0] ? trabajos[j].resumen : "(pipeline)");
+/* Limpiar procesos terminados */
+void check_jobs(int notificar) {
+    int i, j;
+    int status;
+    pid_t pid;
+    int vivos;
+
+    while ((pid = waitpid(-1, &status, WNOHANG)) > 0) {
+        for (i = 0; i < MAX_JOBS; i++) {
+            if (jobs[i].estado == EJECUTANDO) {
+                vivos = 0;
+                for (j = 0; j < jobs[i].npids; j++) {
+                    if (jobs[i].pids[j] == pid) {
+                        jobs[i].pids[j] = 0;
+                    }
+                    if (jobs[i].pids[j] > 0) {
+                        vivos++;
+                    }
+                }
+                if (vivos == 0) {
+                    jobs[i].estado = FINALIZADO;
+                    if (notificar) {
+                        printf("[%d]+ Done\t%s\n", i + 1, jobs[i].mandato);
+                        jobs[i].estado = LIBRE;
+                    }
+                }
+            }
+        }
     }
-    if (!alguno)
-        printf("No hay trabajos.\n");
 }
 
-/* Devuelve el último índice de trabajo usado (o -1 si no hay). */
-static int ultimoTrabajoUsado(void)
-{
-    for (int j = MAX_TRABAJOS - 1; j >= 0; --j)
-    {
-        if (trabajos[j].usado)
-            return j + 1;
+/* --- Comandos Internos --- */
+
+/* Comando 'jobs' */
+void builtin_jobs() {
+    check_jobs(0); /* Actualizar estados sin imprimir notificaciones automáticas */
+    int i;
+    for (i = 0; i < MAX_JOBS; i++) {
+        if (jobs[i].estado == EJECUTANDO) {
+            printf("[%d]+ Running\t%s\n", i + 1, jobs[i].mandato);
+        } else if (jobs[i].estado == FINALIZADO) {
+            printf("[%d]+ Done\t%s\n", i + 1, jobs[i].mandato);
+            jobs[i].estado = LIBRE; /* Limpiar tras mostrar */
+        }
     }
-    return -1;
 }
 
-/* Trae un trabajo al foreground y espera a todos sus procesos. */
-static void builtinFg(int indice1)
-{
-    if (indice1 <= 0 || indice1 > MAX_TRABAJOS || !trabajos[indice1 - 1].usado)
-    {
-        fprintf(stderr, "fg: número de job inválido\n");
+/* Comando 'fg' */
+void builtin_fg(char **argv) {
+    int pos = -1;
+    int i, j;
+    int status;
+
+    check_jobs(0);
+
+    if (argv[1] == NULL) {
+        for (i = MAX_JOBS - 1; i >= 0; i--) {
+            if (jobs[i].estado == EJECUTANDO) {
+                pos = i;
+                break;
+            }
+        }
+    } else {
+        pos = atoi(argv[1]) - 1;
+    }
+
+    /* Validaciones de errores */
+    if (pos < 0 || pos >= MAX_JOBS || jobs[pos].estado == LIBRE) {
+        fprintf(stderr, "fg: no existe ese trabajo\n");
         return;
     }
 
-    trabajo_t *jb = &trabajos[indice1 - 1];
-    actualizarTrabajosNoBloqueante();
-    if (jb->estado == trabajoTerminado)
-    {
+    if (jobs[pos].estado == FINALIZADO) {
         fprintf(stderr, "fg: el trabajo ya ha finalizado\n");
+        jobs[pos].estado = LIBRE;
         return;
     }
 
-    printf("Reanudando [%d] %s\n", indice1,
-           jb->resumen[0] ? jb->resumen : "(pipeline)");
-    fflush(stdout);
+    printf("%s\n", jobs[pos].mandato);
 
-    /* Establecemos los PIDs en foreground para reenviar Ctrl+C */
-    fg_num_pids = 0;
-    for (int k = 0; k < jb->numPids && k < MAX_PROC_EN_TUBERIA; ++k)
-    {
-        if (jb->pids[k] > 0)
-        {
-            fg_pids[fg_num_pids++] = jb->pids[k];
-        }
-    }
+    for (j = 0; j < jobs[pos].npids; j++) {
+        if (jobs[pos].pids[j] > 0) {
+            fg_pid = jobs[pos].pids[j];
+            waitpid(jobs[pos].pids[j], &status, 0);
 
-    /* Esperar a que terminen todos los procesos del trabajo */
-    for (;;)
-    {
-        bool algunoVivo = false;
-        for (int k = 0; k < jb->numPids; ++k)
-        {
-            if (jb->pids[k] > 0)
-            {
-                algunoVivo = true;
-                int status;
-                pid_t w;
-                do
-                {
-                    w = waitpid(jb->pids[k], &status, 0);
-                } while (w < 0 && errno == EINTR);
-                if (w > 0)
-                    jb->pids[k] = 0;
+            if (WIFSIGNALED(status)) {
+                if (WTERMSIG(status) == SIGQUIT) {
+                    printf("Quit (core dumped)\n");
+                } else if (WTERMSIG(status) == SIGINT) {
+                    printf("\n");
+                }
             }
         }
-        if (!algunoVivo)
-            break;
     }
 
-    /* Limpiar foreground */
-    fg_num_pids = 0;
-
-    jb->estado = trabajoTerminado;
-    jb->usado = false;
-    jb->numPids = 0;
-    jb->resumen[0] = '\0';
+    fg_pid = 0;
+    jobs[pos].estado = LIBRE;
 }
 
-/* Construye un resumen legible de la línea para mostrar en jobs. */
-static void construirResumenLinea(const tline *linea, char *dst, size_t tam)
-{
-    dst[0] = '\0';
-    size_t queda = tam;
-    for (int i = 0; i < linea->ncommands; ++i)
-    {
-        const tcommand *c = &linea->commands[i];
-        for (int a = 0; a < c->argc; ++a)
-        {
-            bool tieneEspacios = (strchr(c->argv[a], ' ') != NULL);
-            int n;
-            if (tieneEspacios)
-            {
-                n = snprintf(dst + strlen(dst), queda, "%s\"%s\"",
-                             (a ? " " : (i ? " | " : "")),
-                             c->argv[a]);
-            }
-            else
-            {
-                n = snprintf(dst + strlen(dst), queda, "%s%s",
-                             (a ? " " : (i ? " | " : "")),
-                             c->argv[a]);
-            }
+/* Comando 'cd' */
+void builtin_cd(char **argv) {
+    char *dir;
+    char cwd[MAX_LINE];
 
-            if (n < 0 || (size_t)n >= queda)
-            {
-                dst[tam - 1] = '\0';
-                return;
-            }
-            queda -= (size_t)n;
-        }
-    }
-    if (linea->redirect_input)
-    {
-        int n = snprintf(dst + strlen(dst), queda,
-                         " < %s", linea->redirect_input);
-        if (n > 0)
-            queda -= (size_t)n;
-    }
-    if (linea->redirect_output)
-    {
-        int n = snprintf(dst + strlen(dst), queda,
-                         " > %s", linea->redirect_output);
-        if (n > 0)
-            queda -= (size_t)n;
-    }
-    if (linea->redirect_error)
-    {
-        int n = snprintf(dst + strlen(dst), queda,
-                         " >& %s", linea->redirect_error);
-        if (n > 0)
-            queda -= (size_t)n;
-    }
-    if (linea->background)
-    {
-        (void)snprintf(dst + strlen(dst), queda, " &");
-    }
-}
-
-/* Ejecuta una línea: crea tuberías, aplica redirecciones y lanza procesos. */
-static void ejecutarLinea(tline *linea)
-{
-    if (!linea || linea->ncommands <= 0)
-        return;
-
-    const int n = linea->ncommands;
-    int (*tuberias)[2] = NULL;
-
-    if (n > 1)
-    {
-        tuberias = calloc((size_t)(n - 1), sizeof(int[2]));
-        if (!tuberias)
-        {
-            perror("calloc pipes");
-            return;
-        }
-        for (int i = 0; i < n - 1; ++i)
-        {
-            if (pipe(tuberias[i]) < 0)
-            {
-                perror("pipe");
-                for (int k = 0; k < i; ++k)
-                {
-                    close(tuberias[k][0]);
-                    close(tuberias[k][1]);
-                }
-                free(tuberias);
-                return;
-            }
-        }
-    }
-
-    pid_t pidsHijos[MAX_PROC_EN_TUBERIA];
-    int numHijos = 0;
-
-    for (int i = 0; i < n; ++i)
-    {
-        tcommand *cmd = &linea->commands[i];
-        pid_t pid = fork();
-        if (pid < 0)
-        {
-            perror("fork");
-            if (tuberias)
-            {
-                for (int k = 0; k < n - 1; ++k)
-                {
-                    close(tuberias[k][0]);
-                    close(tuberias[k][1]);
-                }
-                free(tuberias);
-            }
-            return;
-        }
-
-        if (pid == 0)
-        {
-            /* PROCESO HIJO */
-
-            /* CAMBIO: solo separar en otro grupo si es background */
-            if (linea->background)
-            {
-                if (setpgid(0, 0) < 0)
-                {
-                    /* Si falla, no es crítico en este contexto docente. */
-                }
-            }
-
-            /* Los hijos usan la acción por defecto de las señales. */
-            restaurarSenalesEnHijo();
-
-            /* Redirecciones */
-            if (i == 0 && linea->redirect_input)
-            {
-                abrirYDuplicarOSalir(linea->redirect_input, O_RDONLY, 0,
-                                     STDIN_FILENO,
-                                     "No se pudo abrir archivo de entrada");
-            }
-            if (i == n - 1 && linea->redirect_output)
-            {
-                abrirYDuplicarOSalir(linea->redirect_output,
-                                     O_WRONLY | O_CREAT | O_TRUNC, 0644,
-                                     STDOUT_FILENO,
-                                     "No se pudo abrir archivo de salida");
-            }
-            if (i == n - 1 && linea->redirect_error)
-            {
-                abrirYDuplicarOSalir(linea->redirect_error,
-                                     O_WRONLY | O_CREAT | O_TRUNC, 0644,
-                                     STDERR_FILENO,
-                                     "No se pudo abrir archivo de error");
-            }
-
-            /* Tuberías */
-            if (tuberias)
-            {
-                if (i > 0)
-                {
-                    if (dup2(tuberias[i - 1][0], STDIN_FILENO) < 0)
-                        morirEnHijo("dup2 stdin pipe: %s\n", strerror(errno));
-                }
-                if (i < n - 1)
-                {
-                    if (dup2(tuberias[i][1], STDOUT_FILENO) < 0)
-                        morirEnHijo("dup2 stdout pipe: %s\n", strerror(errno));
-                }
-                for (int k = 0; k < n - 1; ++k)
-                {
-                    close(tuberias[k][0]);
-                    close(tuberias[k][1]);
-                }
-            }
-
-            if (!cmd->filename || !cmd->argv || !cmd->argv[0])
-            {
-                const char *mostrado =
-                    (cmd->argv && cmd->argv[0]) ? cmd->argv[0] : "(null)";
-                mandatoNoEncontrado(mostrado);
-                _exit(127);
-            }
-
-            execvp(cmd->filename, cmd->argv);
-            mandatoNoEncontrado(cmd->argv[0]);
-            _exit(127);
-        }
-
-        /* PROCESO PADRE */
-
-        if (numHijos < MAX_PROC_EN_TUBERIA)
-            pidsHijos[numHijos++] = pid;
-    }
-
-    if (tuberias)
-    {
-        for (int k = 0; k < n - 1; ++k)
-        {
-            close(tuberias[k][0]);
-            close(tuberias[k][1]);
-        }
-        free(tuberias);
-    }
-
-    if (linea->background)
-    {
-        char resumen[TAM_RESUMEN];
-        construirResumenLinea(linea, resumen, sizeof(resumen));
-        int idx = anadirTrabajo(pidsHijos, numHijos, resumen);
-        if (idx > 0)
-        {
-            pid_t ultimo = pidsHijos[numHijos - 1];
-            printf("[%d] %d en background\n", idx, (int)ultimo);
-            fflush(stdout);
-        }
-        /* No tocamos fg_pids: no es foreground. */
-        return;
-    }
-
-    /* Trabajo en foreground:
-       rellenamos fg_pids para que Ctrl+C pueda reenviar SIGINT. */
-    fg_num_pids = 0;
-    for (int i = 0; i < numHijos && i < MAX_PROC_EN_TUBERIA; ++i)
-    {
-        fg_pids[fg_num_pids++] = pidsHijos[i];
-    }
-
-    for (int i = 0; i < numHijos; ++i)
-    {
-        int status;
-        while (waitpid(pidsHijos[i], &status, 0) < 0 && errno == EINTR)
-        {
-            /* repetir si EINTR */
-        }
-
-        if (WIFSIGNALED(status) && WTERMSIG(status) == SIGINT)
-        {
-            ssize_t ign = write(STDOUT_FILENO, "\n", 1);
-            (void)ign;
-        }
-    }
-
-    /* Trabajo en foreground terminado */
-    fg_num_pids = 0;
-}
-
-/* Cambia de directorio: cd [ruta] o cd (HOME). */
-static void builtinCd(const tcommand *cmd)
-{
-    const char *destino = NULL;
-    if (cmd->argc < 2)
-    {
-        destino = getenv("HOME");
-        if (!destino || !*destino)
-        {
+    if (argv[1] == NULL) {
+        dir = getenv("HOME");
+        if (dir == NULL) {
             fprintf(stderr, "cd: variable HOME no definida\n");
             return;
         }
-    }
-    else
-    {
-        destino = cmd->argv[1];
+    } else {
+        dir = argv[1];
     }
 
-    if (chdir(destino) != 0)
-    {
-        fprintf(stderr, "cd: %s: %s\n", destino, strerror(errno));
-        return;
-    }
-
-    char cwd[PATH_MAX];
-    if (getcwd(cwd, sizeof(cwd)))
-    {
-        printf("%s\n", cwd);
+    if (chdir(dir) != 0) {
+        fprintf(stderr, "cd: %s: %s\n", dir, strerror(errno));
+    } else {
+        if (getcwd(cwd, sizeof(cwd)) != NULL) {
+            printf("%s\n", cwd);
+        }
     }
 }
 
-int main(void)
-{
-    shell_pgid = getpgrp();
-    instalarSenalesShell();
+/* Comando 'exit' */
+void builtin_exit(char **argv) {
+    int status = 0;
+    if (argv[1] != NULL) status = atoi(argv[1]);
+    exit(status);
+}
 
-    char *bufLinea = NULL;
-    size_t tamBuf = 0;
+/* --- Main --- */
 
-    for (;;)
-    {
-        actualizarTrabajosNoBloqueante();
-        fputs(PROMPT, stdout);
-        fflush(stdout);
+int main(void) {
+    char buf[MAX_LINE];
+    tline *line;
+    int i, j;
+    pid_t pid;
+    int **pipes;
+    pid_t pids_hijos[MAX_PIDS_PER_JOB];
+    int status;
 
-        ssize_t leidos = getline(&bufLinea, &tamBuf, stdin);
-        if (leidos < 0)
-        {
-            if (errno == EINTR)
-            {
-                /* Ctrl+C mientras esperamos línea:
-                   el manejador ya ha impreso '\n', solo limpiamos y seguimos. */
+    /* Configuración inicial de señales */
+    signal(SIGINT, manejador_ctrl_c);
+    signal(SIGQUIT, manejador_ctrl_quit);
+
+    init_jobs();
+
+    while (1) {
+        check_jobs(1); /* Limpiar zombies y notificar antes del prompt */
+        printf("%s", PROMPT);
+
+        /* Lectura de prompt */
+        if (fgets(buf, MAX_LINE, stdin) == NULL) {
+            if (ferror(stdin) && errno == EINTR) {
                 clearerr(stdin);
                 continue;
             }
-            putchar('\n');
-            break; /* EOF real */
+            break;
         }
 
-        if (leidos == 1 && bufLinea[0] == '\n')
+        line = tokenize(buf);
+        if (line == NULL || line->ncommands == 0) continue;
+
+        /* Comandos Internos */
+        if (strcmp(line->commands[0].argv[0], "exit") == 0) {
+            builtin_exit(line->commands[0].argv);
+        }
+        if (strcmp(line->commands[0].argv[0], "cd") == 0) {
+            builtin_cd(line->commands[0].argv);
             continue;
-
-        tline *linea = tokenize(bufLinea);
-        if (!linea)
+        }
+        if (strcmp(line->commands[0].argv[0], "jobs") == 0) {
+            builtin_jobs();
             continue;
+        }
+        if (strcmp(line->commands[0].argv[0], "fg") == 0) {
+            builtin_fg(line->commands[0].argv);
+            continue;
+        }
 
-        if (linea->ncommands == 1)
-        {
-            tcommand *cmd = &linea->commands[0];
-            const char *cmd0 =
-                (cmd->argv && cmd->argv[0]) ? cmd->argv[0] : NULL;
+        /* Gestión de pipes */
+        pipes = NULL;
+        if (line->ncommands > 1) {
+            pipes = (int **)malloc((line->ncommands - 1) * sizeof(int *));
+            for (i = 0; i < line->ncommands - 1; i++) {
+                pipes[i] = (int *)malloc(2 * sizeof(int));
+                if (pipe(pipes[i]) < 0) {
+                    perror("pipe");
+                    exit(1);
+                }
+            }
+        }
 
-            if (cmd0 && strcmp(cmd0, "exit") == 0)
-            {
-                int status = 0;
-                if (cmd->argc >= 2)
-                    status = atoi(cmd->argv[1]);
-                free(bufLinea);
-                exit(status);
+        /* Bucle de creación de hijos */
+        for (i = 0; i < line->ncommands; i++) {
+            pid = fork();
+
+            if (pid < 0) {
+                perror("fork");
+                exit(1);
             }
 
-            if (cmd0 && strcmp(cmd0, "jobs") == 0)
-            {
-                builtinJobs();
-                continue;
-            }
+            /* --- Poceso hijo --- */
+            if (pid == 0) {
+                if (line->background) {
+                    setpgid(0, 0);
+                } else {
+                    signal(SIGINT, SIG_DFL);
+                    signal(SIGQUIT, SIG_DFL);
+                }
 
-            if (cmd0 && strcmp(cmd0, "fg") == 0)
-            {
-                int idx;
-                if (cmd->argc < 2)
-                {
-                    idx = ultimoTrabajoUsado();
-                    if (idx < 0)
-                    {
-                        fprintf(stderr, "fg: no hay trabajos\n");
-                        continue;
+                /* Redirecciones */
+                if (i == 0 && line->redirect_input != NULL) {
+                    FILE *f = fopen(line->redirect_input, "r");
+                    if (f == NULL) {
+                        fprintf(stderr, "%s: Error. %s\n", line->redirect_input, strerror(errno));
+                        exit(1);
+                    }
+                    dup2(fileno(f), STDIN_FILENO);
+                    fclose(f);
+                }
+
+                if (i == line->ncommands - 1 && line->redirect_output != NULL) {
+                    FILE *f = fopen(line->redirect_output, "w");
+                    if (f == NULL) {
+                        fprintf(stderr, "%s: Error. %s\n", line->redirect_output, strerror(errno));
+                        exit(1);
+                    }
+                    dup2(fileno(f), STDOUT_FILENO);
+                    fclose(f);
+                }
+
+                if (line->redirect_error != NULL) {
+                    FILE *f = fopen(line->redirect_error, "w");
+                    if (f == NULL) {
+                        fprintf(stderr, "%s: Error. %s\n", line->redirect_error, strerror(errno));
+                        exit(1);
+                    }
+                    dup2(fileno(f), STDERR_FILENO);
+                    fclose(f);
+                }
+
+                /* Conexión de tuberías */
+                if (line->ncommands > 1) {
+                    if (i > 0) dup2(pipes[i - 1][0], STDIN_FILENO);
+                    if (i < line->ncommands - 1) dup2(pipes[i][1], STDOUT_FILENO);
+                    for (j = 0; j < line->ncommands - 1; j++) {
+                        close(pipes[j][0]);
+                        close(pipes[j][1]);
                     }
                 }
-                else
-                {
-                    idx = atoi(cmd->argv[1]);
+
+                /* Comprobación de existencia del mandato antes de ejecutar */
+                if (line->commands[i].filename == NULL) {
+                    fprintf(stderr, "Mandato: Error. No se encuentra el mandato %s\n", line->commands[i].argv[0]);
+                    exit(1);
                 }
-                builtinFg(idx);
-                continue;
+
+                execvp(line->commands[i].filename, line->commands[i].argv);
+
+                /* Fallback por seguridad */
+                fprintf(stderr, "Mandato: Error. No se encuentra el mandato %s\n", line->commands[i].argv[0]);
+                exit(1);
             }
 
-            if (cmd0 && strcmp(cmd0, "cd") == 0)
-            {
-                builtinCd(cmd);
-                continue;
-            }
+            /* Proceso padre: guardar PID del hijo creado */
+            if (i < MAX_PIDS_PER_JOB) pids_hijos[i] = pid;
         }
 
-        ejecutarLinea(linea);
-    }
+        /* Limpieza de pipes en el padre */
+        if (line->ncommands > 1) {
+            for (i = 0; i < line->ncommands - 1; i++) {
+                close(pipes[i][0]);
+                close(pipes[i][1]);
+                free(pipes[i]);
+            }
+            free(pipes);
+        }
 
-    free(bufLinea);
+        /* Gestión foreground / background */
+        if (line->background) {
+            add_job(pids_hijos, line->ncommands, buf);
+        } else {
+            for (i = 0; i < line->ncommands; i++) {
+                fg_pid = pids_hijos[i];
+                waitpid(pids_hijos[i], &status, 0);
+
+                if (WIFSIGNALED(status)) {
+                    if (WTERMSIG(status) == SIGQUIT) {
+                        printf("Quit (core dumped)\n");
+                    } else if (WTERMSIG(status) == SIGINT) {
+                        printf("\n");
+                    }
+                }
+            }
+            fg_pid = 0;
+        }
+    }
     return 0;
 }

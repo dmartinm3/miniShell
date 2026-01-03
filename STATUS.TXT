@@ -11,7 +11,7 @@ MiniShell – Checklist final
   Salida esperada: una nueva línea `msh> ` sin ejecutar nada.[1]
 
 - [OK] Ctrl+D cierra la minishell limpiamente  
-  Ejemplo comando: en una línea nueva, pulsar Ctrl+D.  
+  Ejemplo comando: en una línea nueva, pulsar Ctrl+D.
   Salida esperada: minishell termina y vuelve a la shell del sistema, con un salto de línea final.[1]
 
 ### Mandatos simples en foreground
@@ -74,7 +74,9 @@ MiniShell – Checklist final
   Salida esperada: recuento correcto, p. ej. `1 a` y `2 b` (según orden del sort).[1]
 
 - [ls: cannot access '/noexiste': No such file or directory] `>&` en último mandato con pipe  
-  Ejemplo comando: `ls /noexiste | tr a-z A-Z >& err_pipe.txt`  
+  Ejemplo comandos:
+  - `ls /noexiste | tr a-z A-Z >& err_pipe.txt`
+  - `cat err_pipe.txt`
   Salida esperada: `err_pipe.txt` contiene el error (posiblemente en mayúsculas si el último lo transforma).[1]
 
 ### Comportamiento de background (&)
@@ -104,15 +106,15 @@ MiniShell – Checklist final
 ### fg (foreground)
 - [OK] fg con índice trae un trabajo  
   Ejemplo secuencia:  
-  - `sleep 4 &`  
+  - `sleep 4 &`
   - `jobs` (anotar índice n)  
   - `fg n`  
   Salida esperada: la shell se bloquea hasta que acaba `sleep 4` y luego muestra `msh> `; no hay segfault.[1]
 
 - [OK] fg sin argumento usa último trabajo  
   Ejemplo secuencia:  
-  - `sleep 3 &`  
-  - `sleep 5 &`  
+  - `sleep 7 &`
+  - `sleep 10 &`
   - `fg`  
   Salida esperada: trae el último lanzado (el de 5 segundos) a foreground y espera a que termine.[1]
 
@@ -175,7 +177,7 @@ MiniShell – Checklist final
   Salida esperada: ruta absoluta de HOME, por ejemplo `/home/usuario`.[1]
 
 - [OK] cd a ruta inexistente muestra error legible  
-  Ejemplo comando: `cd /ruta/que/no/existe`  
+  Ejemplo comando: `cd /ruta/que/no/existe`
   Salida esperada: mensaje `cd: /ruta/que/no/existe: <descripción>` y el directorio actual no cambia.[1]
 
 ### Errores y mensajes
@@ -212,9 +214,3 @@ MiniShell – Checklist final
 
 - [OK] jobs y fg nunca provocan segfault incluso con pocos o muchos trabajos  
   Ejemplo: lanzar varios `sleep 1 &`, ejecutar `jobs` y diferentes `fg n`, incluidos índices inválidos, sin que se caiga minishell.[1]
-
-  COSAS QUE MIRAR PARA PARECER LEGALES:
-
-  - Los char mejor ponerlos como uint8_t
-  - Revisar si ha puesto punteros como unsigned int y mantener el estilo en el resto
-  - Comprobar que se hace free de todo lo que reserva memoria
