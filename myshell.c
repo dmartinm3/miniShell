@@ -35,6 +35,19 @@ job_t jobs[MAX_JOBS];
 /* Variable global para reenvío de señales */
 static volatile pid_t fg_pid = 0;
 
+/* --- Funciones Auxiliares --- */
+void parser_quote_fix(char *str) {
+    if (str == NULL) return;
+    size_t len = strlen(str);
+    if (len >= 2) {
+        if ((str[0] == '"' && str[len-1] == '"') ||
+            (str[0] == '\'' && str[len-1] == '\'')) {
+            memmove(str, str + 1, len - 2);
+            str[len - 2] = '\0';
+        }
+    }
+}
+
 /* --- Manejadores de Señales --- */
 
 /* Manejador de SIGINT (Ctrl+C) */
@@ -126,14 +139,14 @@ void check_jobs(int notificar) {
 
 /* Comando 'jobs' */
 void builtin_jobs() {
-    check_jobs(0); /* Actualizar estados sin imprimir notificaciones automáticas */
+    check_jobs(0);
     int i;
     for (i = 0; i < MAX_JOBS; i++) {
         if (jobs[i].estado == EJECUTANDO) {
             printf("[%d]+ Running\t%s\n", i + 1, jobs[i].mandato);
         } else if (jobs[i].estado == FINALIZADO) {
             printf("[%d]+ Done\t%s\n", i + 1, jobs[i].mandato);
-            jobs[i].estado = LIBRE; /* Limpiar tras mostrar */
+            jobs[i].estado = LIBRE;
         }
     }
 }
@@ -205,6 +218,8 @@ void builtin_cd(char **argv) {
         dir = argv[1];
     }
 
+    parser_quote_fix(dir);
+
     if (chdir(dir) != 0) {
         fprintf(stderr, "cd: %s: %s\n", dir, strerror(errno));
     } else {
@@ -253,6 +268,16 @@ int main(void) {
 
         line = tokenize(buf);
         if (line == NULL || line->ncommands == 0) continue;
+
+        /* Limpieza de comillas en argumentos y ficheros */
+        for (i = 0; i < line->ncommands; i++) {
+            for (j = 0; j < line->commands[i].argc; j++) {
+                parser_quote_fix(line->commands[i].argv[j]);
+            }
+        }
+        parser_quote_fix(line->redirect_input);
+        parser_quote_fix(line->redirect_output);
+        parser_quote_fix(line->redirect_error);
 
         /* Comandos Internos */
         if (strcmp(line->commands[0].argv[0], "exit") == 0) {
