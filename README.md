@@ -1,91 +1,106 @@
-🐚 MiniShell - Práctica de SSOO
-Intérprete de comandos desarrollado en C para la asignatura de Sistemas Operativos.
+# 🐚 MiniShell - Práctica de SSOO
+
+![Language](https://img.shields.io/badge/Language-C-00599C?style=flat-square&logo=c&logoColor=white)
+![OS](https://img.shields.io/badge/OS-Linux-FCC624?style=flat-square&logo=linux&logoColor=black)
+![Course](https://img.shields.io/badge/Asignatura-Sistemas_Operativos-lightgrey?style=flat-square)
+
+> Intérprete de comandos desarrollado en C para la asignatura de Sistemas Operativos.
 
 Este proyecto implementa una shell básica capaz de ejecutar mandatos externos, gestionar procesos en primer y segundo plano, y manipular la entrada/salida mediante redirecciones y tuberías.
 
-👥 Autores
-Nombre	Rol
-Héctor Julián Alijas	Desarrollador
-Daniel Martín Muñoz	Desarrollador
-🚀 Funcionalidades Implementadas
-1. ⚙️ Gestión de Procesos
-Mandatos externos: Soporte total para ejecutables del sistema (e.g., ls, grep, sleep).
+## 👥 Autores
 
-Background (&): Ejecución asíncrona de tareas sin bloquear la terminal.
+| Nombre | Rol |
+| :--- | :--- |
+| **Héctor Julián Alijas** | Desarrollador |
+| **Daniel Martín Muñoz** | Desarrollador |
 
-Job Control:
+---
 
-Gestión de hasta 20 trabajos simultáneos.
+## 🚀 Funcionalidades Implementadas
 
-Monitorización de estado (EJECUTANDO, FINALIZADO).
+### 1. ⚙️ Gestión de Procesos
+*   **Mandatos externos**: Soporte total para ejecutables del sistema (e.g., `ls`, `grep`, `sleep`).
+*   **Background (`&`)**: Ejecución asíncrona de tareas sin bloquear la terminal.
+*   **Job Control**:
+    *   Gestión de hasta **20 trabajos** simultáneos.
+    *   Monitorización de estado (`EJECUTANDO`, `FINALIZADO`).
+    *   Limpieza automática de procesos *zombie*.
 
-Limpieza automática de procesos zombie.
+### 2. 🔧 Mandatos Internos (Built-ins)
 
-2. 🔧 Mandatos Internos (Built-ins)
-Comando	Descripción	Uso
-cd	Cambia el directorio actual (por defecto a HOME).	cd [dir]
-jobs	Lista los trabajos activos y su estado.	jobs
-fg	Trae un proceso de background al primer plano.	fg [id]
-exit	Cierra la shell (opcionalmente con código de retorno).	exit [n]
-3. 🔀 Redirecciones y Tuberías
-Entrada (<): cmd < fichero
+| Comando | Descripción | Uso |
+| :--- | :--- | :--- |
+| `cd` | Cambia el directorio actual (por defecto a `HOME`). | `cd [dir]` |
+| `jobs` | Lista los trabajos activos y su estado. | `jobs` |
+| `fg` | Trae un proceso de background al primer plano. | `fg [id]` |
+| `exit` | Cierra la shell (opcionalmente con código de retorno). | `exit [n]` |
 
-Salida (>): cmd > fichero
+### 3. 🔀 Redirecciones y Tuberías
+*   **Entrada (`<`)**: `cmd < fichero`
+*   **Salida (`>`)**: `cmd > fichero`
+*   **Error (`>&`)**: Soporte para redirigir `stderr`.
+*   **Tuberías (`|`)**: Conexión de múltiples comandos (e.g., `ls | grep .c | wc -l`). Soporta *N* comandos encadenados.
 
-Error (>&): Soporte para redirigir stderr.
+### 4. 🚦 Gestión de Señales
+*   **SIGINT (`Ctrl+C`)**:
+    *   *En el prompt*: Se ignora (imprime nueva línea).
+    *   *En ejecución*: Se envía al proceso en primer plano.
+*   **SIGQUIT (`Ctrl+\`)**:
+    *   Envía terminación con volcado de memoria (*core dump*) si hay un proceso activo.
 
-Tuberías (|): Conexión de múltiples comandos (e.g., ls | grep .c | wc -l). Soporta N comandos encadenados.
+### 5. 📝 Parsing
+*   **Limpieza de comillas**: Elimina comillas simples o dobles innecesarias (`"archivo.txt"` → `archivo.txt`).
+*   **Tokenización**: Utiliza la librería externa `parser.h` para el análisis léxico.
 
-4. 🚦 Gestión de Señales
-SIGINT (Ctrl+C):
+---
 
-En el prompt: Se ignora (imprime nueva línea).
+## 🛠️ Compilación
 
-En ejecución: Se envía al proceso en primer plano.
+El proyecto depende de la librería de parsing (`parser.h` / `libparser.a` o `parser.c`).
 
-SIGQUIT (Ctrl+\):
-
-Envía terminación con volcado de memoria (core dump) si hay un proceso activo.
-
-5. 📝 Parsing
-Limpieza de comillas: Elimina comillas simples o dobles innecesarias ("archivo.txt" → archivo.txt).
-
-Tokenización: Utiliza la librería externa parser.h para el análisis léxico.
-
-🛠️ Compilación
-El proyecto depende de la librería de parsing (parser.h / libparser.a o parser.c).
-
-bash
 # Compilar usando make
+```bash
 make
+```
 
 # O compilación manual
+```bash
 gcc -Wall -Wextra -o minishell minishell.c parser.c
-🖥️ Uso
+```
+
+## 🖥️ Uso
 Una vez iniciada, la shell muestra el prompt:
 
-text
+```bash
 msh> 
-Ejemplos Prácticos
+```
+
+Ejemplos Prácticos:
+
 Trabajos en segundo plano y control
-bash
+```bash
 msh> sleep 20 &
-[1] 12345
+ 12345[1]
 
 msh> jobs
-[1]+ Running    sleep 20
++ Running    sleep 20[1]
 
 msh> fg 1
 sleep 20
 # (Espera a que termine el proceso en primer plano)
-Tuberías y redirecciones complexas
-bash
+```
+
+Tuberías y redirecciones complejas
+```bash
 msh> ls -l | grep "minishell" > salida.txt
 Manejo de errores
 bash
 msh> cd directorio_falso
 cd: directorio_falso: No such file or directory
-📂 Estructura del Código
+```
+
+## 📂 Estructura del Código
 El flujo principal del programa se organiza de la siguiente manera:
 
 main: Bucle infinito que lee con fgets, parsea con tokenize y decide si ejecutar un built-in o lanzar procesos hijos con fork.
@@ -96,7 +111,7 @@ Señales (manejador_ctrl_c, _quit): Capturan interrupciones y las reenvían a la
 
 Built-ins: Funciones modulares para cada comando interno.
 
-⚙️ Limitaciones y Constantes
+## ⚙️ Limitaciones y Constantes
 ⚠️ Nota: No se implementó memoria dinámica para las estructuras de control por complejidad y diseño académico.
 
 Longitud máxima de línea: 1024 caracteres.
@@ -104,5 +119,3 @@ Longitud máxima de línea: 1024 caracteres.
 Máximo de trabajos (Jobs): 20.
 
 Máximo de procesos por trabajo: 32 (permite tuberías extensas).
-
-Práctica académica de la asignatura de Sistemas Operativos.
